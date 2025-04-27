@@ -1,0 +1,16 @@
+.vscode
+build
+CMakeFiles
+CMakeCache.txt
+CMakeDoxyfile.in
+CMakeDoxygenDefaults.cmake
+Makefile
+generated
+compile_commands.json
+pico-sdk
+pico_extras
+waveshirt.bin
+waveshirt.dis
+waveshirt.elf.map
+waveshirt.hex
+waveshirt.uf2
