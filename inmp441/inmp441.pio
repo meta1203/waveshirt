@@ -2,47 +2,51 @@
 .side_set 2
 
 .wrap_target
-; start left channel
-  set x 30 side 0b00
+; Left channel
+    set x, 30 side 0b00
 loop_l:
-  in pins 1 side 0b01
-  jmp x-- loop_l side 0b00
-  in pins 1 side 0b11
-; start right channel
-  set x 30 side 0b10
+    in pins 1 side 0b01
+    jmp x-- loop_l side 0b00
+		in pins 1 side 0b11
+; Right channel
+    set x, 30 side 0b10
 loop_r:
-  in pins 1 side 0b11
-  jmp x-- loop_r side 0b10
-  in pins 1 side 0b01
+    in pins 1 side 0b11
+    jmp x-- loop_r side 0b10
+		in pins 1 side 0b01
 .wrap
 
 % c-sdk {
 #include "hardware/clocks.h"
 
 static void gpio_init_inmp441(PIO pio, uint8_t sm, uint8_t pin_num, uint8_t pin_val, uint8_t pin_dir) {
+	pio_gpio_init(pio, pin_num);
   uint32_t pinmask = 1 << pin_num;
   pio_sm_set_pins_with_mask(pio, sm, pin_val << pin_num, pinmask);
   pio_sm_set_pindirs_with_mask(pio, sm, pin_dir << pin_num, pinmask);
-  pio_gpio_init(pio, pin_num);
 }
 
-static inline void inmp441_program_init(PIO pio, uint sm, uint offset, uint pin_start, float freq) {
+static inline void inmp441_program_init(PIO pio, uint sm, uint offset, uint pin_start, float sample_rate) {
   pio_sm_config c = inmp441_program_get_default_config(offset);
-  sm_config_set_sideset_pins(&c, pin_start);
   sm_config_set_in_pins(&c, pin_start+2);
   sm_config_set_in_shift(&c, false, true, 32);
   sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);
+	sm_config_set_sideset(&c, 2, false, false);
+	sm_config_set_sideset_pins(&c, pin_start);
 
-  // float div = clock_get_hz(clk_sys) / (freq);
-	float div = clock_get_hz(clk_sys) / 6144000.0;
-  printf("div freq: %f %f\n", div, freq);
+	// sample rate * 32 bits per sample * 2 channels * 2 instructions per bit(?)
+	float clock_rate = sample_rate * 32.0 * 2.0 * 2.0;
+  float div = clock_get_hz(clk_sys) / clock_rate;
+
+  printf("div: %f target: %fkHz\n", div, clock_rate / 1000);
   sm_config_set_clkdiv(&c, div);
 
-	gpio_init_inmp441(pio, sm, pin_start, 0, 1);
-  gpio_init_inmp441(pio, sm, pin_start+1, 0, 1);
+  pio_sm_init(pio, sm, offset, &c);
+
+	gpio_init_inmp441(pio, sm, pin_start, 1, 1);
+  gpio_init_inmp441(pio, sm, pin_start+1, 1, 1);
   gpio_init_inmp441(pio, sm, pin_start+2, 0, 0);
 
-  pio_sm_init(pio, sm, offset, &c);
   pio_sm_set_enabled(pio, sm, true);
 }
 %}
