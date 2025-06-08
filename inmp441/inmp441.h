@@ -26,13 +26,13 @@ static const pio_program_t pio_i2s_read32 = {
 template <typename T>
 class INMP441 {
 private:
-  struct {
-    PIO pio;
-    uint sm;
-    uint offset;
+	struct {
+		PIO pio;
+		uint sm;
+		uint offset;
 		uint pin_start;
 		uint sample_rate;
-  } pio;
+	} pio;
 
 	struct {
 		dma_channel_config config;
@@ -52,16 +52,16 @@ private:
 	size_t get_write_head();
 
 public:
-  INMP441(
+	INMP441(
 		uint8_t pin_start,
 		uint32_t sample_rate,
 		size_t buffered_sample_count = 4096,
 		uint8_t target_pio = 0xff
 	);
-  ~INMP441();
+	~INMP441();
 
-  void read_audio_left(T* buf, size_t len);
-  void read_audio_right(T* buf, size_t len);
-  void read_audio_interleaved(T* buf, size_t len);
+	void read_audio_left(T* buf, size_t len);
+	void read_audio_right(T* buf, size_t len);
+	void read_audio_interleaved(T* buf, size_t len);
 };
 
