@@ -3,46 +3,112 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "pico/stdlib.h"
-#include "inmp441.pio.h"
+#include "hardware/clocks.h"
 #include <math.h>
 
-#define SIGNAL_DIVISOR (256*256)
+#define SIGNAL_DIVISOR 256
 
-INMP441::INMP441(uint8_t pin_start, uint32_t sample_rate) {
-  bool success = pio_claim_free_sm_and_add_program_for_gpio_range(
-    &inmp441_program,
-    &this->pio.pio,
-    &this->pio.sm,
-    &this->pio.offset,
-    pin_start,
-    3,
-    true
-  );
-  hard_assert(success);
-  inmp441_program_init(
+INMP441::INMP441(
+	uint8_t pin_start,
+	uint32_t sample_rate,
+	size_t buffered_sample_count,
+	uint8_t target_pio
+) {
+	this->pio.pin_start = pin_start;
+	this->pio.sample_rate = sample_rate;
+
+	double bsc_power = log2(this->buffered_sample_count);
+	if (floor(bsc_power) != bsc_power)
+		panic("MP441: ERROR - buffered_sample_count must be a power of two (current value is between 2^%d and 2%d)", floor(bsc_power), floor(bsc_power)+1);
+	this->buffered_sample_count = buffered_sample_count<<1;
+
+  this->init_pio();
+	this->init_dma();
+}
+
+INMP441::~INMP441() {
+	dma_channel_cleanup(this->dma.channel);
+	#if PICO_RP2040
+	dma_channel_cleanup(this->dma.chain_channel);
+	#endif
+	free(this->dma.ringbuf);
+  pio_remove_program_and_unclaim_sm(
+    &pio_i2s_read32,
     this->pio.pio,
     this->pio.sm,
-    this->pio.offset,
-    pin_start,
-    sample_rate
+    this->pio.offset
   );
-	// this->dma.ringbuf = (int32_t*)calloc(INMP441_BUF_SIZE, sizeof(int32_t));
-	this->dma.ringbuf = (int32_t*)aligned_alloc(INMP441_BUF_SIZE, INMP441_BUF_SIZE * sizeof(int32_t));
-	for (size_t i = 0; i < INMP441_BUF_SIZE; i += 1) {
+}
+
+static void pio_init_gpio(PIO pio, uint8_t sm, uint8_t pin_num, uint8_t pin_val, uint8_t pin_dir) {
+	pio_gpio_init(pio, pin_num);
+  uint32_t pinmask = 1 << pin_num;
+  pio_sm_set_pins_with_mask(pio, sm, pin_val << pin_num, pinmask);
+  pio_sm_set_pindirs_with_mask(pio, sm, pin_dir << pin_num, pinmask);
+}
+
+void INMP441::init_pio(uint8_t install_to) {
+	if (install_to == 0xff) {
+		// automatically find a usable PIO module and claim a state machine
+		for (uint8_t i = 0; i < NUM_PIOS; i += 1) {
+			this->pio.pio = pio_get_instance(i);
+			if (pio_can_add_program(this->pio.pio, &pio_i2s_read32)) {
+				int8_t test_sm = pio_claim_unused_sm(this->pio.pio, false);
+				if (test_sm >= 0) {
+					this->pio.sm = test_sm;
+					goto success;
+				}
+			}
+		}
+		panic("INMP441: ERROR - could not automatically add PIO program.");
+		success:
+		;
+	} else {
+		// use the explicitly defined PIO module
+		this->pio.pio = pio_get_instance(install_to);
+		hard_assert(pio_can_add_program(this->pio.pio, &pio_i2s_read32));
+		this->pio.sm = pio_claim_unused_sm(this->pio.pio, true);
+	}
+
+	// install and initialize the program/state machine
+	this->pio.offset = pio_add_program(this->pio.pio, &pio_i2s_read32);
+	pio_sm_config c = pio_get_default_sm_config();
+	sm_config_set_wrap(&c, this->pio.offset, this->pio.offset+pio_i2s_read32.length-1);
+	sm_config_set_sideset(&c, 2, false, false);
+  sm_config_set_in_pins(&c, this->pio.pin_start+2);
+  sm_config_set_in_shift(&c, false, true, 32);
+  sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_RX);
+	sm_config_set_sideset(&c, 2, false, false);
+	sm_config_set_sideset_pins(&c, this->pio.pin_start);
+	// sample rate * 32 bits per sample * 2 channels * 2 instructions per bit
+	float clock_rate = this->pio.sample_rate * 32.0 * 2.0 * 2.0;
+  float div = clock_get_hz(clk_sys) / clock_rate;
+  // printf("div: %f target: %fkHz\n", div, clock_rate / 1000);
+  sm_config_set_clkdiv(&c, div);
+  pio_sm_init(this->pio.pio, this->pio.sm, this->pio.offset, &c);
+	pio_init_gpio(this->pio.pio, this->pio.sm, this->pio.pin_start, 1, 1);
+  pio_init_gpio(this->pio.pio, this->pio.sm, this->pio.pin_start+1, 1, 1);
+  pio_init_gpio(this->pio.pio, this->pio.sm, this->pio.pin_start+2, 0, 0);
+  pio_sm_set_enabled(this->pio.pio, this->pio.sm, true);
+}
+
+void INMP441::init_dma() {
+	this->dma.ringbuf = (int32_t*)aligned_alloc(this->buffered_sample_count, this->buffered_sample_count * sizeof(int32_t));
+	for (size_t i = 0; i < this->buffered_sample_count; i += 1) {
 		this->dma.ringbuf[i] = 0;
 	}
 	this->dma.channel = dma_claim_unused_channel(true);
 	this->dma.config = dma_channel_get_default_config(this->dma.channel);
 	channel_config_set_read_increment(&this->dma.config, false);
 	channel_config_set_write_increment(&this->dma.config, true);
-	channel_config_set_ring(&this->dma.config, true, log2(INMP441_BUF_SIZE));
+	channel_config_set_ring(&this->dma.config, true, log2(this->buffered_sample_count));
 	channel_config_set_dreq(&this->dma.config, pio_get_dreq(this->pio.pio, this->pio.sm, false));
 	#if PICO_RP2040
 	// RP2040-specific code (using 2-channel chained dma)
-	int dma_chain = dma_claim_unused_channel(true);
+	this->dma.chain_channel = dma_claim_unused_channel(true);
 	channel_config_set_chain_to(
 		&this->dma.config,
-		dma_chain
+		this->dma.chain_channel
 	);
 
 	dma_channel_configure(
@@ -50,17 +116,17 @@ INMP441::INMP441(uint8_t pin_start, uint32_t sample_rate) {
 		&this->dma.config,
 		this->dma.ringbuf,
 		&this->pio.pio->rxf[this->pio.sm],
-		INMP441_BUF_SIZE,
+		this->buffered_sample_count,
 		true
 	);
 
-	dma_channel_config chain_config = dma_channel_get_default_config(dma_chain);
+	dma_channel_config chain_config = dma_channel_get_default_config(this->dma.chain_channel);
 	channel_config_set_transfer_data_size(&chain_config, DMA_SIZE_32);
 	channel_config_set_read_increment(&chain_config, false);
   channel_config_set_write_increment(&chain_config, false);
 	channel_config_set_chain_to(&chain_config, this->dma.channel);
 	dma_channel_configure(
-		dma_chain,
+		this->dma.chain_channel,
 		&chain_config,
 		&(dma_channel_hw_addr(this->dma.channel)->write_addr),
 		&this->dma.ringbuf,
@@ -74,22 +140,11 @@ INMP441::INMP441(uint8_t pin_start, uint32_t sample_rate) {
 		&this->dma.config,
 		this->dma.ringbuf,
 		&this->pio.pio->rxf[this->pio.sm],
-		(0x1 << 28) | INMP441_BUF_SIZE,
+		(0x1 << 28) | this->buffered_sample_count,
 		true
 	);
 	#endif
 	this->dma.read_head = 0;
-}
-
-INMP441::~INMP441() {
-	dma_channel_cleanup(this->dma.channel);
-	free(this->dma.ringbuf);
-  pio_remove_program_and_unclaim_sm(
-    &inmp441_program,
-    this->pio.pio,
-    this->pio.sm,
-    this->pio.offset
-  );
 }
 
 size_t INMP441::get_write_head() {
@@ -101,78 +156,52 @@ void INMP441::read_audio_left(int32_t* buf, size_t len) {
 	size_t buf_pos = this->dma.read_head;
 	if (buf_pos & 0b1 == 1) buf_pos += 1;
   for (size_t i = 0; i < len; i += 1) {
-		buf[i] = this->dma.ringbuf[(buf_pos+i*2) % INMP441_BUF_SIZE] / SIGNAL_DIVISOR;
+		buf[i] = this->dma.ringbuf[(buf_pos+i*2) % this->buffered_sample_count] / SIGNAL_DIVISOR;
   }
-	this->dma.read_head = (this->dma.read_head + (len*2)) % INMP441_BUF_SIZE;
-  // printf("\n");
+	this->dma.read_head = (this->dma.read_head + (len*2)) % this->buffered_sample_count;
 }
 
 void INMP441::read_audio_left(float* buf, size_t len) {
   size_t buf_pos = this->dma.read_head;
 	if (buf_pos & 0b1 == 1) buf_pos += 1;
   for (size_t i = 0; i < len; i += 1) {
-		buf[i] = this->dma.ringbuf[(buf_pos+i*2) % INMP441_BUF_SIZE] / SIGNAL_DIVISOR;
+		buf[i] = (float)(this->dma.ringbuf[(buf_pos+i*2) % this->buffered_sample_count] / SIGNAL_DIVISOR);
   }
-	this->dma.read_head = (this->dma.read_head + (len*2)) % INMP441_BUF_SIZE;
-  // printf("\n");
+	this->dma.read_head = (this->dma.read_head + (len*2)) % this->buffered_sample_count;
 }
 
 void INMP441::read_audio_right(int32_t* buf, size_t len) {
+	size_t buf_pos = this->dma.read_head;
+	if (buf_pos & 0b1 == 0) buf_pos += 1;
   for (size_t i = 0; i < len; i += 1) {
-    // read and discard left channel word
-    pio_sm_get_blocking(
-      this->pio.pio,
-      this->pio.sm
-    );
-    // read and store right channel word
-    buf[i] = (int32_t)pio_sm_get_blocking(
-      this->pio.pio,
-      this->pio.sm
-    );
+		buf[i] = this->dma.ringbuf[(buf_pos+i*2) % this->buffered_sample_count] / SIGNAL_DIVISOR;
   }
+	this->dma.read_head = (this->dma.read_head + (len*2)) % this->buffered_sample_count;
 }
 
 void INMP441::read_audio_right(float* buf, size_t len) {
+  size_t buf_pos = this->dma.read_head;
+	if (buf_pos & 0b1 == 0) buf_pos += 1;
   for (size_t i = 0; i < len; i += 1) {
-    // read and discard left channel word
-    pio_sm_get_blocking(
-      this->pio.pio,
-      this->pio.sm
-    );
-    // read and store right channel word
-    buf[i] = pio_sm_get_blocking(
-      this->pio.pio,
-      this->pio.sm
-    );
+		buf[i] = (float)(this->dma.ringbuf[(buf_pos+i*2) % this->buffered_sample_count] / SIGNAL_DIVISOR);
   }
+	this->dma.read_head = (this->dma.read_head + (len*2)) % this->buffered_sample_count;
 }
 
 void INMP441::read_audio_interleaved(int32_t* buf, size_t len) {
-  for (size_t i = 0; i < len*2; i += 2) {
-    // read and store left channel word
-    buf[i] = ((int32_t)pio_sm_get_blocking(
-      this->pio.pio,
-      this->pio.sm
-    )) / 256;
-    // read and store right channel word
-    buf[i+1] = ((int32_t)pio_sm_get_blocking(
-      this->pio.pio,
-      this->pio.sm
-    )) / 256;
+	size_t buf_pos = this->dma.read_head;
+	if (buf_pos & 0b1 == 1) buf_pos += 1;
+  for (size_t i = 0; i < len; i += 1) {
+		buf[i] = this->dma.ringbuf[(buf_pos+i) % this->buffered_sample_count] / SIGNAL_DIVISOR;
   }
+	this->dma.read_head = (this->dma.read_head + len*2) % this->buffered_sample_count;
 }
 
 void INMP441::read_audio_interleaved(float* buf, size_t len) {
-  for (size_t i = 0; i < len*2; i += 2) {
-    // read and store left channel word
-    buf[i] = pio_sm_get_blocking(
-      this->pio.pio,
-      this->pio.sm
-    );
-    // read and store right channel word
-    buf[i+1] = pio_sm_get_blocking(
-      this->pio.pio,
-      this->pio.sm
-    );
+  size_t buf_pos = this->dma.read_head;
+	if (buf_pos & 0b1 == 1) buf_pos += 1;
+  for (size_t i = 0; i < len; i += 1) {
+		buf[i] = (float)(this->dma.ringbuf[(buf_pos+i) % this->buffered_sample_count] / SIGNAL_DIVISOR);
   }
+	this->dma.read_head = (this->dma.read_head + len) % this->buffered_sample_count;
 }

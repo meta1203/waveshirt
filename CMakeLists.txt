@@ -23,7 +23,7 @@ if (EXISTS ${picoVscode})
     include(${picoVscode})
 endif()
 # ====================================================================================
-set(PICO_BOARD pico CACHE STRING "Board type")
+set(PICO_BOARD pico2 CACHE STRING "Board type")
 
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
@@ -57,7 +57,6 @@ pico_set_program_version(waveshirt "0.1")
 
 # Generate PIO header
 pico_generate_pio_header(waveshirt ${CMAKE_CURRENT_LIST_DIR}/ws2812.pio)
-pico_generate_pio_header(waveshirt ${CMAKE_CURRENT_LIST_DIR}/inmp441/inmp441.pio)
 
 # Modify the below lines to enable/disable output over UART/USB
 pico_enable_stdio_uart(waveshirt 1)
