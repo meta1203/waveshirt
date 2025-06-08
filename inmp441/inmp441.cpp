@@ -1,14 +1,14 @@
 #include "inmp441.h"
-
 #include <stdio.h>
 #include <stdlib.h>
 #include "pico/stdlib.h"
 #include "hardware/clocks.h"
 #include <math.h>
 
-#define SIGNAL_DIVISOR 256
+#define SIGNAL_DIVISOR (1<<8)
 
-INMP441::INMP441(
+template<typename T>
+INMP441<T>::INMP441(
 	uint8_t pin_start,
 	uint32_t sample_rate,
 	size_t buffered_sample_count,
@@ -16,17 +16,19 @@ INMP441::INMP441(
 ) {
 	this->pio.pin_start = pin_start;
 	this->pio.sample_rate = sample_rate;
+	this->buffered_sample_count = buffered_sample_count;
 
-	double bsc_power = log2(this->buffered_sample_count);
+	float bsc_power = log2(this->buffered_sample_count);
 	if (floor(bsc_power) != bsc_power)
-		panic("MP441: ERROR - buffered_sample_count must be a power of two (current value is between 2^%d and 2%d)", floor(bsc_power), floor(bsc_power)+1);
+		panic("MP441: ERROR - buffered_sample_count must be a power of two, current value is %d (2^%f)", this->buffered_sample_count, bsc_power);
 	this->buffered_sample_count = buffered_sample_count<<1;
 
   this->init_pio();
 	this->init_dma();
 }
 
-INMP441::~INMP441() {
+template<typename T>
+INMP441<T>::~INMP441() {
 	dma_channel_cleanup(this->dma.channel);
 	#if PICO_RP2040
 	dma_channel_cleanup(this->dma.chain_channel);
@@ -47,7 +49,8 @@ static void pio_init_gpio(PIO pio, uint8_t sm, uint8_t pin_num, uint8_t pin_val,
   pio_sm_set_pindirs_with_mask(pio, sm, pin_dir << pin_num, pinmask);
 }
 
-void INMP441::init_pio(uint8_t install_to) {
+template<typename T>
+void INMP441<T>::init_pio(uint8_t install_to) {
 	if (install_to == 0xff) {
 		// automatically find a usable PIO module and claim a state machine
 		for (uint8_t i = 0; i < NUM_PIOS; i += 1) {
@@ -92,7 +95,8 @@ void INMP441::init_pio(uint8_t install_to) {
   pio_sm_set_enabled(this->pio.pio, this->pio.sm, true);
 }
 
-void INMP441::init_dma() {
+template<typename T>
+void INMP441<T>::init_dma() {
 	this->dma.ringbuf = (int32_t*)aligned_alloc(this->buffered_sample_count, this->buffered_sample_count * sizeof(int32_t));
 	for (size_t i = 0; i < this->buffered_sample_count; i += 1) {
 		this->dma.ringbuf[i] = 0;
@@ -147,61 +151,42 @@ void INMP441::init_dma() {
 	this->dma.read_head = 0;
 }
 
-size_t INMP441::get_write_head() {
+template<typename T>
+size_t INMP441<T>::get_write_head() {
 	dma_channel_hw_addr(this->dma.channel)->transfer_count;
 	return dma_channel_hw_addr(this->dma.channel)->write_addr - (size_t)this->dma.ringbuf;
 }
 
-void INMP441::read_audio_left(int32_t* buf, size_t len) {
+template<typename T>
+void INMP441<T>::read_audio_left(T* buf, size_t len) {
 	size_t buf_pos = this->dma.read_head;
 	if (buf_pos & 0b1 == 1) buf_pos += 1;
   for (size_t i = 0; i < len; i += 1) {
-		buf[i] = this->dma.ringbuf[(buf_pos+i*2) % this->buffered_sample_count] / SIGNAL_DIVISOR;
+		buf[i] = (T)(this->dma.ringbuf[(buf_pos+i*2) % this->buffered_sample_count] / SIGNAL_DIVISOR);
   }
 	this->dma.read_head = (this->dma.read_head + (len*2)) % this->buffered_sample_count;
 }
 
-void INMP441::read_audio_left(float* buf, size_t len) {
-  size_t buf_pos = this->dma.read_head;
-	if (buf_pos & 0b1 == 1) buf_pos += 1;
-  for (size_t i = 0; i < len; i += 1) {
-		buf[i] = (float)(this->dma.ringbuf[(buf_pos+i*2) % this->buffered_sample_count] / SIGNAL_DIVISOR);
-  }
-	this->dma.read_head = (this->dma.read_head + (len*2)) % this->buffered_sample_count;
-}
-
-void INMP441::read_audio_right(int32_t* buf, size_t len) {
+template<typename T>
+void INMP441<T>::read_audio_right(T* buf, size_t len) {
 	size_t buf_pos = this->dma.read_head;
 	if (buf_pos & 0b1 == 0) buf_pos += 1;
   for (size_t i = 0; i < len; i += 1) {
-		buf[i] = this->dma.ringbuf[(buf_pos+i*2) % this->buffered_sample_count] / SIGNAL_DIVISOR;
+		buf[i] = (T)(this->dma.ringbuf[(buf_pos+i*2) % this->buffered_sample_count] / SIGNAL_DIVISOR);
   }
 	this->dma.read_head = (this->dma.read_head + (len*2)) % this->buffered_sample_count;
 }
 
-void INMP441::read_audio_right(float* buf, size_t len) {
-  size_t buf_pos = this->dma.read_head;
-	if (buf_pos & 0b1 == 0) buf_pos += 1;
-  for (size_t i = 0; i < len; i += 1) {
-		buf[i] = (float)(this->dma.ringbuf[(buf_pos+i*2) % this->buffered_sample_count] / SIGNAL_DIVISOR);
-  }
-	this->dma.read_head = (this->dma.read_head + (len*2)) % this->buffered_sample_count;
-}
-
-void INMP441::read_audio_interleaved(int32_t* buf, size_t len) {
+template<typename T>
+void INMP441<T>::read_audio_interleaved(T* buf, size_t len) {
 	size_t buf_pos = this->dma.read_head;
 	if (buf_pos & 0b1 == 1) buf_pos += 1;
   for (size_t i = 0; i < len; i += 1) {
-		buf[i] = this->dma.ringbuf[(buf_pos+i) % this->buffered_sample_count] / SIGNAL_DIVISOR;
+		buf[i] = (T)(this->dma.ringbuf[(buf_pos+i) % this->buffered_sample_count] / SIGNAL_DIVISOR);
   }
 	this->dma.read_head = (this->dma.read_head + len*2) % this->buffered_sample_count;
 }
 
-void INMP441::read_audio_interleaved(float* buf, size_t len) {
-  size_t buf_pos = this->dma.read_head;
-	if (buf_pos & 0b1 == 1) buf_pos += 1;
-  for (size_t i = 0; i < len; i += 1) {
-		buf[i] = (float)(this->dma.ringbuf[(buf_pos+i) % this->buffered_sample_count] / SIGNAL_DIVISOR);
-  }
-	this->dma.read_head = (this->dma.read_head + len) % this->buffered_sample_count;
-}
+template class INMP441<int32_t>;
+template class INMP441<float>;
+template class INMP441<double>;

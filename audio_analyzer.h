@@ -3,7 +3,9 @@
 #include "arduinoFFT/arduinoFFT.h"
 
 #define AUDIO_SAMPLE_COUNT 4096
-#define AUDIO_OUTPUT_BUCKETS 11
+#define AUDIO_OUTPUT_BUCKETS 10
+
+typedef void (*audio_writethrough)(double* buff, size_t len);
 
 class audio_analyzer {
 private:
@@ -29,8 +31,11 @@ private:
 public:
   audio_analyzer(size_t sample_frequency);
   ~audio_analyzer();
+	
   void write_audio_input(float* new_data);
   void write_audio_input(int32_t* new_data);
+	void write_audio_input(audio_writethrough func);
+
   bool is_ready();
   void analyze_audio();
   void read_audio_output(float* output);

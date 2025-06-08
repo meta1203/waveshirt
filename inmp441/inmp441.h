@@ -23,6 +23,7 @@ static const pio_program_t pio_i2s_read32 = {
 	.origin = -1,
 };
 
+template <typename T>
 class INMP441 {
 private:
   struct {
@@ -54,15 +55,13 @@ public:
   INMP441(
 		uint8_t pin_start,
 		uint32_t sample_rate,
-		size_t buffered_sample_count = 8192,
+		size_t buffered_sample_count = 4096,
 		uint8_t target_pio = 0xff
 	);
   ~INMP441();
-  void read_audio_left(int32_t* buf, size_t len);
-  void read_audio_left(float* buf, size_t len);
-  void read_audio_right(int32_t* buf, size_t len);
-  void read_audio_right(float* buf, size_t len);
-  void read_audio_interleaved(int32_t* buf, size_t len);
-  void read_audio_interleaved(float* buf, size_t len);
+
+  void read_audio_left(T* buf, size_t len);
+  void read_audio_right(T* buf, size_t len);
+  void read_audio_interleaved(T* buf, size_t len);
 };
 

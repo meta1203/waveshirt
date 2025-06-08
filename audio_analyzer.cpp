@@ -36,7 +36,6 @@ void audio_analyzer::write_audio_input(float* new_data) {
   sem_acquire_blocking(&(this->input_lock));
   for (size_t i = 0; i < AUDIO_SAMPLE_COUNT; i += 1) {
     this->input_chunk.audio_data[i] = new_data[i];
-		this->input_chunk.imaginary_data[i] = 0;
   }
   this->input_chunk.read = false;
   sem_release(&(this->input_lock));
@@ -48,10 +47,16 @@ void audio_analyzer::write_audio_input(int32_t* new_data) {
   sem_acquire_blocking(&(this->input_lock));
   for (size_t i = 0; i < AUDIO_SAMPLE_COUNT; i += 1) {
     this->input_chunk.audio_data[i] = new_data[i];
-		this->input_chunk.imaginary_data[i] = 0;
   }
   this->input_chunk.read = false;
   sem_release(&(this->input_lock));
+}
+
+void audio_analyzer::write_audio_input(audio_writethrough func) {
+	sem_acquire_blocking(&(this->input_lock));
+	func(this->input_chunk.audio_data, AUDIO_SAMPLE_COUNT);
+	this->input_chunk.read = false;
+	sem_release(&(this->input_lock));
 }
 
 bool audio_analyzer::is_ready() {
@@ -86,15 +91,20 @@ void audio_analyzer::analyze_audio() {
     // further post processing of bucket data
     // sum = sum - noise_gate[x];
 		sum = pow(sum, 1.0/3.0) / 1.5;
-    sum = MAX(0, MIN(100.0, sum));
     this->level_data[x] = sum;
 		// printf("level: %f\n", sum);
 
 		lower = upper;
     x += 1;
   }
-  sem_release(&(this->input_lock));
   sem_release(&(this->output_lock));
+
+	// clear out imaginary data for next pass
+	for (size_t i = 0; i < AUDIO_SAMPLE_COUNT; i += 1) {
+		this->input_chunk.imaginary_data[i] = 0;
+	}
+	sem_release(&(this->input_lock));
+
   return;
 }
 

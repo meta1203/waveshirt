@@ -1,4 +1,4 @@
-#define DEBUG 0
+#define DEBUG 1
 
 #include <stdio.h>
 
@@ -14,21 +14,17 @@
 #define SAMPLING_FREQUENCY 48000
 
 audio_analyzer* aa;
-INMP441* mic;
+INMP441<double>* mic;
+
+uint8_t final_divisor = 10;
 
 void io_thread();
 void write_levels(float* levels);
-inline void print_bits_32(int32_t value);
-inline void print_bits_double(double value);
 
 int main() {
 	stdio_init_all();
 
   ws2812_init();
-  printf("sleeping for 2 seconds...\n");
-  // sleep_ms(2000);
-  printf("awoken from sleep!\n");
-
   aa = new audio_analyzer(SAMPLING_FREQUENCY);
 
   multicore_launch_core1(io_thread);
@@ -43,8 +39,7 @@ int main() {
 
 // handle audio in and ws2812 out
 void io_thread() {
-	mic = new INMP441(2, SAMPLING_FREQUENCY);
-  int32_t* audio_data = (int32_t*)malloc(AUDIO_SAMPLE_COUNT * sizeof(int32_t));
+	mic = new INMP441<double>(2, SAMPLING_FREQUENCY, AUDIO_SAMPLE_COUNT);
   float* bucket_levels = (float*)malloc(AUDIO_SAMPLE_COUNT * sizeof(float));
 
   sleep_ms(20);
@@ -54,9 +49,10 @@ void io_thread() {
 
   while (true) {
     // read audio
-    mic->read_audio_left(audio_data, AUDIO_SAMPLE_COUNT);
+		aa->write_audio_input([](double* buff, size_t len) {
+			mic->read_audio_left(buff, len);
+		});
 		sample_counter += 1;
-	  aa->write_audio_input(audio_data);
 
     // read bucket values from fft processor
     aa->read_audio_output(bucket_levels);
@@ -70,10 +66,11 @@ void io_thread() {
 const uint32_t max_height = NUM_PIXELS / AUDIO_OUTPUT_BUCKETS;
 void write_levels(float* levels) {
   for (uint16_t bucket = 0; bucket < AUDIO_OUTPUT_BUCKETS; bucket += 1) {
+		float level = levels[bucket] / final_divisor;
 		#if DEBUG
-		printf("bucket %u: %lf\n", bucket, levels[bucket]);
+		printf("bucket %u: %lf\n", bucket, level);
 		#endif
-    float level = levels[bucket];
+		level = MAX(0, MIN(100.0, level));
     for (uint32_t height = 0; height < max_height; height += 1) {
       ws2812_color_t color = {0x0, 0x0, 0x0};
       if (height <= level) {
@@ -85,17 +82,4 @@ void write_levels(float* levels) {
       ws2812_set_led(bucket*max_height + height, color);
     }
   }
-}
-
-inline void print_bits_32(int32_t value) {
-	for (int i = 31; i >= 0; i--) {
-		printf("%c", (value & (1 << i)) ? '1' : '0');
-	}
-}
-
-inline void print_bits_double(double value) {
-	int64_t converted = *((int64_t*)&value);
-	for (int i = sizeof(double); i >= 0; i--) {
-		printf("%c", (converted & (1 << i)) ? '1' : '0');
-	}
 }
