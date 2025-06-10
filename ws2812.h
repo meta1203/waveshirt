@@ -20,7 +20,7 @@
  *
  */
 #define IS_RGBW false
-#define NUM_PIXELS 200
+#define NUM_PIXELS 600
 
 #ifndef WS2812_PIN
 #ifdef PICO_DEFAULT_WS2812_PIN

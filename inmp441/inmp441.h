@@ -31,11 +31,9 @@ private:
 		uint sm;
 		uint offset;
 		uint pin_start;
-		uint sample_rate;
 	} pio;
 
 	struct {
-		dma_channel_config config;
 		uint8_t channel;
 		void* write_pos;
 		int32_t* ringbuf;
@@ -45,7 +43,8 @@ private:
 		#endif
 	} dma;
 
-	size_t buffered_sample_count;
+	const size_t buffered_sample_count;
+	const uint32_t sample_rate;
 
 	void init_pio(uint8_t install_to = 0xff);
 	void init_dma();
@@ -54,8 +53,8 @@ private:
 public:
 	INMP441(
 		uint8_t pin_start,
-		uint32_t sample_rate,
 		size_t buffered_sample_count = 4096,
+		uint32_t sample_rate = 48000,
 		uint8_t target_pio = 0xff
 	);
 	~INMP441();

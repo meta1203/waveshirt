@@ -7,25 +7,25 @@
 
 // i2s spec is 32 bits, but the INMP411 only sends 24 bits
 // chop off the lower 8 bits maintaining signed value
-#define INMP441_SIGNAL_DIVISOR (1<<8)
+#define INMP441_SIGNAL_DIVISOR (256)
 
 template<typename T>
 INMP441<T>::INMP441(
 	uint8_t pin_start,
-	uint32_t sample_rate,
 	size_t buffered_sample_count,
+	uint32_t sample_rate,
 	uint8_t target_pio
 ) {
-	this->pio.pin_start = pin_start;
-	this->pio.sample_rate = sample_rate;
-	this->buffered_sample_count = buffered_sample_count;
-
-	float bsc_power = log2(this->buffered_sample_count);
+	float bsc_power = log2(buffered_sample_count);
 	if (floor(bsc_power) != bsc_power)
-		panic("MP441: ERROR - buffered_sample_count must be a power of two, current value is %d (2^%f)", this->buffered_sample_count, bsc_power);
+		panic("MP441: ERROR - buffered_sample_count must be a power of two, current value is %d (2^%f)", buffered_sample_count, bsc_power);
 	this->buffered_sample_count = buffered_sample_count<<1;
 
+	this->sample_rate = sample_rate;
+
+	this->pio.pin_start = pin_start;
 	this->init_pio();
+
 	this->init_dma();
 }
 
@@ -44,7 +44,7 @@ INMP441<T>::~INMP441() {
 	);
 }
 
-static void pio_init_gpio(PIO pio, uint8_t sm, uint8_t pin_num, uint8_t pin_val, uint8_t pin_dir) {
+inline static void pio_init_gpio(PIO pio, uint8_t sm, uint8_t pin_num, uint8_t pin_val, uint8_t pin_dir) {
 	pio_gpio_init(pio, pin_num);
 	uint32_t pinmask = 1 << pin_num;
 	pio_sm_set_pins_with_mask(pio, sm, pin_val << pin_num, pinmask);
@@ -86,9 +86,8 @@ void INMP441<T>::init_pio(uint8_t install_to) {
 	sm_config_set_sideset(&c, 2, false, false);
 	sm_config_set_sideset_pins(&c, this->pio.pin_start);
 	// sample rate * 32 bits per sample * 2 channels * 2 instructions per bit
-	float clock_rate = this->pio.sample_rate * 32.0 * 2.0 * 2.0;
+	float clock_rate = this->sample_rate * 32.0 * 2.0 * 2.0;
 	float div = clock_get_hz(clk_sys) / clock_rate;
-	// printf("div: %f target: %fkHz\n", div, clock_rate / 1000);
 	sm_config_set_clkdiv(&c, div);
 	pio_sm_init(this->pio.pio, this->pio.sm, this->pio.offset, &c);
 	pio_init_gpio(this->pio.pio, this->pio.sm, this->pio.pin_start, 1, 1);
@@ -104,22 +103,22 @@ void INMP441<T>::init_dma() {
 		this->dma.ringbuf[i] = 0;
 	}
 	this->dma.channel = dma_claim_unused_channel(true);
-	this->dma.config = dma_channel_get_default_config(this->dma.channel);
-	channel_config_set_read_increment(&this->dma.config, false);
-	channel_config_set_write_increment(&this->dma.config, true);
-	channel_config_set_ring(&this->dma.config, true, log2(this->buffered_sample_count));
-	channel_config_set_dreq(&this->dma.config, pio_get_dreq(this->pio.pio, this->pio.sm, false));
+	dma_channel_config dma_config = dma_channel_get_default_config(this->dma.channel);
+	channel_config_set_read_increment(&dma_config, false);
+	channel_config_set_write_increment(&dma_config, true);
+	channel_config_set_ring(&dma_config, true, log2(this->buffered_sample_count));
+	channel_config_set_dreq(&dma_config, pio_get_dreq(this->pio.pio, this->pio.sm, false));
 	#if PICO_RP2040
 	// RP2040-specific code (using 2-channel chained dma)
 	this->dma.chain_channel = dma_claim_unused_channel(true);
 	channel_config_set_chain_to(
-		&this->dma.config,
+		&dma_config,
 		this->dma.chain_channel
 	);
 
 	dma_channel_configure(
 		this->dma.channel,
-		&this->dma.config,
+		&dma_config,
 		this->dma.ringbuf,
 		&this->pio.pio->rxf[this->pio.sm],
 		this->buffered_sample_count,
@@ -143,7 +142,7 @@ void INMP441<T>::init_dma() {
 	// rp2350+ code (single-channel dma chaining)
 	dma_channel_configure(
 		this->dma.channel,
-		&this->dma.config,
+		&dma_config,
 		this->dma.ringbuf,
 		&this->pio.pio->rxf[this->pio.sm],
 		(0x1 << 28) | this->buffered_sample_count,
